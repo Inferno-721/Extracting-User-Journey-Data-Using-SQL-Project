@@ -1,0 +1,166 @@
+Part 1: Extracting the Data
+There are multiple ways one can approach this project. At the end of the day, only the final extract is important – not necessarily how you got there. That being said, it’s always good to strive for clean and readable code. That’s why I’ve used the WITH clause (common table expression) for the solution code. The complete code is in the attached file. In here, I will justify the suggested solution.
+
+I’ll start with a brief discussion about the chosen approach. I’m a big fan of writing complex queries using the WITH clause. It allows me to break up the code into smaller, easier-to-understand subqueries—making it more readable and easier to debug.
+
+As you’ve probably experienced, bugs always find a way to creep up whenever there’s programming involved. Dealing with this problem is not just about writing bug-free code, it is also about learning to quickly identify and fix those bugs. And CTEs help with the latter part because the code is already segmented into small pieces that you can inspect individually to see how the result evolves with each subsequent subquery, which is invaluable. That’s why I use WITH extensively.
+
+ 
+
+The file starts with a version of the set statement.
+
+SET SESSION group_concat_max_len = 100000;
+This first line sets the system variable group_concact_max_len to a significant number so that the GROUP_CONCAT function at the end of the query can behave appropriately. (There will be more details on what this does and why it’s necessary when we get to that function later.) Importantly for now is that you need to run this line before running the main query.
+
+ 
+
+Now comes the main query with the first subquery: paid_users. This one aims to extract all users eligible for the user journey analysis while excluding test users. Since all relevant users have purchased a subscription, I only need to look at the student_purchases table.
+
+paid_users as
+(
+	SELECT
+		user_id,
+		MIN(date_purchased) as first_order_date,
+		CASE
+			WHEN purchase_type = 0 THEN 'Monthly'
+            WHEN purchase_type = 1 THEN 'Quarterly'
+			WHEN purchase_type = 2 THEN 'Annual'
+			ELSE 'Other'
+		END as subscription_type,
+		purchase_price as price
+	FROM 
+		student_purchases
+	GROUP BY user_id
+	HAVING
+		price > 0
+		AND
+		CAST(first_order_date as DATE) >= '2023-01-01'
+		AND
+		CAST(first_order_date as DATE) < '2023-03-01'
+),
+Reading the code may seem relatively trivial and obvious. We take the user ID, purchase date, and subscription plan of the user and place filters based on the date range defined in the instructions for this project. But the subtlety is that these filters are in the HAVING clause because we want the user’s first purchase to be inside the date range, not any purchase—as would happen if we use the WHERE clause.
+
+Of course, HAVING indicates that we have grouped, in this case, by user_id, which is natural because I want a single record per user that states their first purchase date and the subscription type. I’ve also added the purchase price since I want to filter out those users who have purchased a product at the fantastic price of $0. These are test users, so we can exclude them.
+
+ 
+
+Next is table_interactions. As the name suggests, this query aims to take the list of all relevant users I just described and obtain a list of all the relevant interactions they had with the front page. This data should be taken from the front_interactions table.
+
+table_interactions as
+(
+	SELECT
+		p.user_id,
+        i.visitor_id,
+        i.session_id,
+		i.event_source_url, 
+		i.event_destination_url,
+        p.subscription_type
+	FROM
+		paid_users as p
+        INNER JOIN
+        front_visitors as v ON v.user_id = p.user_id
+        INNER JOIN
+        front_interactions as i ON i.visitor_id = v.visitor_id
+	WHERE
+		i.event_date < p.first_order_date
+),
+The central piece in this query is how to connect the two tables. You need two inner joins: one to connect the user ID with the proper visitor ID (or IDs—a single user can have multiple visitor IDs) and one to extract all the interactions corresponding to the visitor IDs.
+
+We don’t want to collect any sparse data (i.e., a user with a missing user journey); we can directly use an INNER JOIN instead of, let’s say, a LEFT JOIN. In this segment, we should extract only the page visits before the user’s first purchase. So, that’s a simple condition in the WHERE clause that states that we’re only interested in records that have a timestamp earlier than the first purchase date of the user.
+
+ 
+
+The following query is table_aliases, where we rename the URLs of the pages to simple keywords like Homepage or Pricing.
+
+table_aliases as
+(
+	SELECT 
+		user_id,
+        session_id,
+		subscription_type,
+		CASE
+			WHEN event_source_url = 'https://365datascience.com/' THEN 'Homepage'
+			WHEN event_source_url LIKE 'https://365datascience.com/login/%' THEN 'Log in'
+			WHEN event_source_url LIKE 'https://365datascience.com/signup/%' THEN 'Sign up'
+			WHEN event_source_url LIKE 'https://365datascience.com/resources-center/%' THEN 'Resources center'
+			WHEN event_source_url LIKE 'https://365datascience.com/courses/%' THEN 'Courses'
+			WHEN event_source_url LIKE 'https://365datascience.com/career-tracks/%' THEN 'Career tracks'
+			WHEN event_source_url LIKE 'https://365datascience.com/upcoming-courses/%' THEN 'Upcoming courses'
+			WHEN event_source_url LIKE 'https://365datascience.com/career-track-certificate/%' THEN 'Career track certificate'
+			WHEN event_source_url LIKE 'https://365datascience.com/course-certificate/%' THEN 'Course certificate'
+			WHEN event_source_url LIKE 'https://365datascience.com/success-stories/%' THEN 'Success stories'
+			WHEN event_source_url LIKE 'https://365datascience.com/blog/%' THEN 'Blog'
+			WHEN event_source_url LIKE 'https://365datascience.com/pricing/%' THEN 'Pricing'
+			WHEN event_source_url LIKE 'https://365datascience.com/about-us/%' THEN 'About us'
+			WHEN event_source_url LIKE 'https://365datascience.com/instructors/%' THEN 'Instructors'
+			WHEN event_source_url LIKE 'https://365datascience.com/checkout/%' AND event_source_url LIKE '%coupon%' THEN 'Coupon'
+            WHEN event_source_url LIKE 'https://365datascience.com/checkout/%' AND event_source_url NOT LIKE '%coupon%' THEN 'Checkout'
+			ELSE 'Other'
+		END as source_page_alias,
+		CASE
+			WHEN event_destination_url = 'https://365datascience.com/' THEN 'Homepage'
+			WHEN event_destination_url LIKE 'https://365datascience.com/login/%' THEN 'Log in'
+			WHEN event_destination_url LIKE 'https://365datascience.com/signup/%' THEN 'Sign up'
+			WHEN event_destination_url LIKE 'https://365datascience.com/resources-center/%' THEN 'Resources center'
+			WHEN event_destination_url LIKE 'https://365datascience.com/courses/%' THEN 'Courses'
+			WHEN event_destination_url LIKE 'https://365datascience.com/career-tracks/%' THEN 'Career tracks'
+			WHEN event_destination_url LIKE 'https://365datascience.com/upcoming-courses/%' THEN 'Upcoming courses'
+			WHEN event_destination_url LIKE 'https://365datascience.com/career-track-certificate/%' THEN 'Career track certificate'
+			WHEN event_destination_url LIKE 'https://365datascience.com/course-certificate/%' THEN 'Course certificate'
+			WHEN event_destination_url LIKE 'https://365datascience.com/success-stories/%' THEN 'Success stories'
+			WHEN event_destination_url LIKE 'https://365datascience.com/blog/%' THEN 'Blog'
+			WHEN event_destination_url LIKE 'https://365datascience.com/pricing/%' THEN 'Pricing'
+			WHEN event_destination_url LIKE 'https://365datascience.com/about-us/%' THEN 'About us'
+			WHEN event_destination_url LIKE 'https://365datascience.com/instructors/%' THEN 'Instructors'
+			WHEN event_destination_url LIKE 'https://365datascience.com/checkout/%' AND event_destination_url LIKE '%coupon%' THEN 'Coupon'
+            WHEN event_destination_url LIKE 'https://365datascience.com/checkout/%' AND event_destination_url NOT LIKE '%coupon%' THEN 'Checkout'
+			ELSE 'Other'
+		END as destination_page_alias
+	FROM
+		table_interactions
+),
+It’s a query that selects all columns as in the previous query, with the only difference being the source and destination page URL columns. I’m using a CASE statement to tell MySQL to replace the given URL with the nickname or alias (which can be found in the URL_Aliases.xlsx). One detail here is that—except for the homepage—I’m not considering only an exact match. Instead, if the URL starts with this phrase, replace it with this nickname, achieved with the LIKE keyword and the percent sign % at the end of the URL in question.
+
+The percent sign indicates ‘match everything here,’ so it can match no characters or any other combination after the first part. To see why I do this, let’s consider the blog posts. Every blog post has a separate URL, as it is a different page. But all of them start with https://365datascience.com/blog/. All the differences in the URL come after the last backslash, and they are usually some form of the blog post’s title. We want to look at the blog’s performances as a whole, not any particular article. That’s why we should match every URL starting with that string.
+
+ 
+
+At this point, we have managed to create a list of the relevant interactions of every user. It contains the session ID during which the current interaction happens, the subscription type the user purchased, and the source and destination pages for this particular interaction. So now, we must combine these pages into one big string for every session.
+
+We first must combine the source and destination page columns into one. And that’s precisely what the table_concatenated query does.
+
+table_concatenated as
+(
+	SELECT 
+		user_id,
+        session_id,
+		subscription_type,
+		CONCAT(source_page_alias,
+				'-',
+				destination_page_alias) as source_destination
+	FROM
+		table_aliases
+),
+It uses the CONCAT function to connect the two strings, using a dash - to separate them.
+
+ 
+
+And finally, the table_group_concatenated query is where I take all records for a single session and combine the strings into one big user journey sequence.
+
+table_group_concatenated as
+(
+	SELECT 
+		user_id,
+        session_id,
+		subscription_type,
+		GROUP_CONCAT(source_destination
+			SEPARATOR '-') as user_journey
+	FROM
+		table_concatenated
+	GROUP BY session_id
+)
+If I am to do that, it is only natural that I group by the session ID and use an aggregate function. This function is GROUP_CONCAT. Be sure to use the same separator symbol here—as in the previous concat—to be consistent. But there’s an important caveat about this function; it has a limit of 1024 symbols. So, if we tried to combine all the records into a string that is longer than that, it would truncate it and display only the first 1,024 symbols it managed to combine.
+
+In our data, occasional sessions are longer, so this truncation is triggered quite often, which is why I must increase the limit of this function. And that’s precisely the job of the first line in the file. It increases the limit to 100,000 for this working session, allowing us to run the query without truncation. The number I’ve chosen is just a generically big one, larger than the most significant user journey string in the data.
+
+And that’s it—the whole query.
